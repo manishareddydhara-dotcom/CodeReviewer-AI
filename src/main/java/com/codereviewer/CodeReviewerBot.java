@@ -10,7 +10,7 @@ public class CodeReviewerBot {
     public static void main(String[] args) throws Exception {
         String githubToken = System.getenv("GITHUB_TOKEN");
         String groqApiKey = System.getenv("GROQ_API_KEY");
-        String repository = System.getenv("GITHUB_REPOSITORY"); // format: owner/repo
+        String repository = System.getenv("GITHUB_REPOSITORY"); 
         String prNumber = System.getenv("PR_NUMBER");
 
         if (githubToken == null || groqApiKey == null || repository == null || prNumber == null) {
@@ -20,27 +20,29 @@ public class CodeReviewerBot {
 
         HttpClient client = HttpClient.newHttpClient();
 
-        // 1. Fetch PR Diff from GitHub
+        // 1. Fetch PR Diff from GitHub (User-Agent added)
         String diffUrl = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber;
         HttpRequest diffRequest = HttpRequest.newBuilder()
                 .uri(URI.create(diffUrl))
                 .header("Accept", "application/vnd.github.v3.diff")
                 .header("Authorization", "Bearer " + githubToken)
+                .header("User-Agent", "CodeReviewer-Bot")
                 .GET()
                 .build();
 
         HttpResponse<String> diffResponse = client.send(diffRequest, HttpResponse.BodyHandlers.ofString());
         String prDiff = diffResponse.body();
 
-        // Truncate diff if it exceeds token safety limits (~4000 chars)
-        if (prDiff.length() > 4000) {
+        if (prDiff == null || prDiff.isBlank()) {
+            prDiff = "No diff available or empty PR contents.";
+        } else if (prDiff.length() > 4000) {
             prDiff = prDiff.substring(0, 4000) + "\n...[diff truncated]";
         }
 
-        // 2. Call Groq API with Llama 3
+        // 2. Call Groq API with Llama 3.1
         String groqPayload = """
         {
-          "model": "llama3-8b-8192",
+          "model": "llama-3.1-8b-instant",
           "messages": [
             {
               "role": "system",
@@ -62,7 +64,7 @@ public class CodeReviewerBot {
                 .build();
 
         HttpResponse<String> groqResponse = client.send(groqRequest, HttpResponse.BodyHandlers.ofString());
-        String aiReview = parseGroqResponse(groqResponse.body());
+        String aiReview = extractContent(groqResponse.body());
 
         // 3. Post Feedback Comment back to GitHub PR
         String commentUrl = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments";
@@ -72,6 +74,7 @@ public class CodeReviewerBot {
                 .uri(URI.create(commentUrl))
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("Authorization", "Bearer " + githubToken)
+                .header("User-Agent", "CodeReviewer-Bot")
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(commentPayload))
                 .build();
@@ -82,26 +85,54 @@ public class CodeReviewerBot {
 
     private static String escapeJson(String input) {
         if (input == null) return "\"\"";
-        return "\"" + input.replace("\\", "\\\\")
-                           .replace("\"", "\\\"")
-                           .replace("\n", "\\n")
-                           .replace("\r", "\\r")
-                           .replace("\t", "\\t") + "\"";
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : input.toCharArray()) {
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < ' ') {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        sb.append("\"");
+        return sb.toString();
     }
 
-    private static String parseGroqResponse(String responseBody) {
-        int contentStart = responseBody.indexOf("\"content\":");
-        if (contentStart == -1) return "Unable to generate review output.";
-        int start = responseBody.indexOf("\"", contentStart + 10) + 1;
-        int end = responseBody.indexOf("\"", start);
-        while (end > 0 && responseBody.charAt(end - 1) == '\\') {
-            end = responseBody.indexOf("\"", end + 1);
+    private static String extractContent(String json) {
+        String key = "\"content\":";
+        int index = json.indexOf(key);
+        if (index == -1) return "Failed to retrieve response from AI model.";
+
+        int start = json.indexOf("\"", index + key.length()) + 1;
+        StringBuilder result = new StringBuilder();
+        boolean escaped = false;
+
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (escaped) {
+                if (c == 'n') result.append('\n');
+                else if (c == 'r') result.append('\r');
+                else if (c == 't') result.append('\t');
+                else result.append(c);
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                break;
+            } else {
+                result.append(c);
+            }
         }
-        if (start > 0 && end > start) {
-            return responseBody.substring(start, end)
-                    .replace("\\n", "\n")
-                    .replace("\\\"", "\"");
-        }
-        return "Review generated successfully.";
+        return result.toString();
     }
 }
