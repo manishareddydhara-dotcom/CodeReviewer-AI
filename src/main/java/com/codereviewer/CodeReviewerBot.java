@@ -1,4 +1,4 @@
-package main.java.com.codereviewer;
+package com.codereviewer;
 
 import java.net.URI;
 import java.net.http.HttpClient;
