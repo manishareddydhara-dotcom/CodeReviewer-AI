@@ -1,29 +1,31 @@
-name: CodeReviewer.AI Automated Review
+name: CodeReviewer Bot
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 jobs:
-  run-bot:
+  review:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-
     steps:
-      - name: Check out repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v3
         with:
+          distribution: temurin
           java-version: "17"
-          distribution: "temurin"
 
       - name: Compile Java Code
-        run: javac src/main/java/com/codereviewer/CodeReviewerBot.java
+        run: |
+          mkdir -p bin
+          find src/main/java -name '*.java' > sources.txt || true
+          if [ -s sources.txt ]; then
+            javac -d bin @sources.txt
+          else
+            echo "No Java sources found"
+          fi
 
       - name: Run CodeReviewer Bot
         env:
@@ -31,4 +33,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: java -cp src/main/java com.codereviewer.CodeReviewerBot
+        run: java -cp bin com.codereviewer.CodeReviewerBot
